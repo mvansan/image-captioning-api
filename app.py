@@ -56,10 +56,8 @@ UNITS = 512
 model = None
 model_paths = None
 
-def initialize_model():
-    global model, model_paths
-    if model is not None:
-        return
+# Khởi tạo model ngay khi import app.py, chỉ tải 1 lần khi worker khởi động
+try:
     model_paths = download_model_from_s3()
     tf.keras.utils.get_custom_objects().update({
         'CNN_Encoder': CNN_Encoder,
@@ -71,44 +69,44 @@ def initialize_model():
     encoder = TransformerEncoderLayer(EMBEDDING_DIM, 1)
     decoder = TransformerDecoderLayer(EMBEDDING_DIM, UNITS, 16, tokenizer)
     cnn_model = CNN_Encoder()
-    _model = ImageCaptioningModel(cnn_model, encoder, decoder)
+    model = ImageCaptioningModel(cnn_model, encoder, decoder)
     loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False, reduction='none')
-    _model.compile(optimizer=tf.keras.optimizers.Adam(1e-4), loss=loss_fn)
+    model.compile(optimizer=tf.keras.optimizers.Adam(1e-4), loss=loss_fn)
+    if os.path.exists(model_paths['cnn_model_path']):
+        model.cnn_model = tf.keras.models.load_model(model_paths['cnn_model_path'])
+        print("Đã tải CNN model thành công!")
+    dummy_image = tf.zeros((1, 299, 299, 3))
+    features = model.cnn_model(dummy_image)
+    enc_output = model.encoder(features, training=False)
+    dec_input = tf.zeros((1, 1), dtype=tf.int32)
+    _ = model.decoder(dec_input, enc_output, training=False)
     try:
-        if os.path.exists(model_paths['cnn_model_path']):
-            _model.cnn_model = tf.keras.models.load_model(model_paths['cnn_model_path'])
-            print("Đã tải CNN model thành công!")
-        dummy_image = tf.zeros((1, 299, 299, 3))
-        features = _model.cnn_model(dummy_image)
-        enc_output = _model.encoder(features, training=False)
-        dec_input = tf.zeros((1, 1), dtype=tf.int32)
-        _ = _model.decoder(dec_input, enc_output, training=False)
-        try:
-            if os.path.exists(model_paths['encoder_weights_path']):
-                _model.encoder.load_weights(model_paths['encoder_weights_path'])
-                print("Đã tải encoder weights thành công")
-            if os.path.exists(model_paths['decoder_weights_path']):
-                _model.decoder.load_weights(model_paths['decoder_weights_path'])
-                print("Đã tải decoder weights thành công")
-        except Exception as e:
-            print(f"Không thể tải encoder/decoder weights: {e}")
-        print("Đã hoàn thành việc tải mô hình")
+        if os.path.exists(model_paths['encoder_weights_path']):
+            model.encoder.load_weights(model_paths['encoder_weights_path'])
+            print("Đã tải encoder weights thành công")
+        if os.path.exists(model_paths['decoder_weights_path']):
+            model.decoder.load_weights(model_paths['decoder_weights_path'])
+            print("Đã tải decoder weights thành công")
     except Exception as e:
-        print(f"Lỗi khi tải các phần mô hình: {e}")
-        import traceback
-        traceback.print_exc()
-    model = _model
+        print(f"Không thể tải encoder/decoder weights: {e}")
+    print("Đã hoàn thành việc tải mô hình")
+except Exception as e:
+    print(f"Lỗi khi tải model từ S3: {e}")
+    import traceback
+    traceback.print_exc()
+    model = None
+    model_paths = None
 
 def load_image(image_bytes):
     if model is None:
-        initialize_model()
+        raise RuntimeError("Model chưa được tải thành công khi khởi động app.")
     img = Image.open(io.BytesIO(image_bytes)).resize((299, 299))
     img = tf.keras.applications.inception_v3.preprocess_input(np.array(img))
     return tf.expand_dims(img, 0)
 
 def generate_caption(image_tensor):
     if model is None:
-        initialize_model()
+        raise RuntimeError("Model chưa được tải thành công khi khởi động app.")
     features = model.cnn_model(image_tensor)
     
     enc_output = model.encoder(features, training=False)
@@ -153,7 +151,7 @@ def generate_caption(image_tensor):
 @app.route('/predict', methods=['POST'])
 def predict():
     if model is None:
-        initialize_model()
+        return jsonify({'error': 'Model chưa sẵn sàng, vui lòng thử lại sau.'}), 503
     if 'image' not in request.files:
         return jsonify({'error': 'No image provided'}), 400
     image = request.files['image'].read()
