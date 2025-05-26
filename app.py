@@ -99,11 +99,9 @@ def initialize_model():
         traceback.print_exc()
     model = _model
 
-@app.before_first_request
-def before_first_request_func():
-    initialize_model()
-
 def load_image(image_bytes):
+    if model is None:
+        initialize_model()
     img = Image.open(io.BytesIO(image_bytes)).resize((299, 299))
     img = tf.keras.applications.inception_v3.preprocess_input(np.array(img))
     return tf.expand_dims(img, 0)
@@ -154,13 +152,13 @@ def generate_caption(image_tensor):
 
 @app.route('/predict', methods=['POST'])
 def predict():
+    if model is None:
+        initialize_model()
     if 'image' not in request.files:
         return jsonify({'error': 'No image provided'}), 400
-
     image = request.files['image'].read()
     image_tensor = load_image(image)
     caption = generate_caption(image_tensor)
-
     return jsonify({'caption': caption})
 
 if __name__ == "__main__":
