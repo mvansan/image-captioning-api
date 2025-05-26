@@ -44,60 +44,64 @@ def download_model_from_s3():
         'decoder_weights_path': os.path.join(TEMP_MODEL_DIR, MODEL_FILES['decoder_weights'])
     }
 
-model_paths = download_model_from_s3()
-
 app = Flask(__name__)
 
 with open("tokenizer.pkl", "rb") as f:
     tokenizer = pickle.load(f)
 
-tf.keras.utils.get_custom_objects().update({
-    'CNN_Encoder': CNN_Encoder,
-    'TransformerEncoderLayer': TransformerEncoderLayer,
-    'TransformerDecoderLayer': TransformerDecoderLayer,
-    'ImageCaptioningModel': ImageCaptioningModel,
-    'Embeddings': Embeddings
-})
-
 MAX_LENGTH = 40
 EMBEDDING_DIM = 512
 UNITS = 512
 
-encoder = TransformerEncoderLayer(EMBEDDING_DIM, 1)
-decoder = TransformerDecoderLayer(EMBEDDING_DIM, UNITS, 16, tokenizer)
-cnn_model = CNN_Encoder()
-model = ImageCaptioningModel(cnn_model, encoder, decoder)
-loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False, reduction='none')
-model.compile(optimizer=tf.keras.optimizers.Adam(1e-4), loss=loss_fn)
+model = None
+model_paths = None
 
-try:
-    if os.path.exists(model_paths['cnn_model_path']):
-        model.cnn_model = tf.keras.models.load_model(model_paths['cnn_model_path'])
-        print("Đã tải CNN model thành công!")
-    
-    dummy_image = tf.zeros((1, 299, 299, 3))
-    features = model.cnn_model(dummy_image)
-    enc_output = model.encoder(features, training=False)
-    dec_input = tf.zeros((1, 1), dtype=tf.int32)
-    _ = model.decoder(dec_input, enc_output, training=False)
-    
+def initialize_model():
+    global model, model_paths
+    if model is not None:
+        return
+    model_paths = download_model_from_s3()
+    tf.keras.utils.get_custom_objects().update({
+        'CNN_Encoder': CNN_Encoder,
+        'TransformerEncoderLayer': TransformerEncoderLayer,
+        'TransformerDecoderLayer': TransformerDecoderLayer,
+        'ImageCaptioningModel': ImageCaptioningModel,
+        'Embeddings': Embeddings
+    })
+    encoder = TransformerEncoderLayer(EMBEDDING_DIM, 1)
+    decoder = TransformerDecoderLayer(EMBEDDING_DIM, UNITS, 16, tokenizer)
+    cnn_model = CNN_Encoder()
+    _model = ImageCaptioningModel(cnn_model, encoder, decoder)
+    loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False, reduction='none')
+    _model.compile(optimizer=tf.keras.optimizers.Adam(1e-4), loss=loss_fn)
     try:
-        if os.path.exists(model_paths['encoder_weights_path']):
-            model.encoder.load_weights(model_paths['encoder_weights_path'])
-            print("Đã tải encoder weights thành công")
-            
-        if os.path.exists(model_paths['decoder_weights_path']):
-            model.decoder.load_weights(model_paths['decoder_weights_path'])
-            print("Đã tải decoder weights thành công")
+        if os.path.exists(model_paths['cnn_model_path']):
+            _model.cnn_model = tf.keras.models.load_model(model_paths['cnn_model_path'])
+            print("Đã tải CNN model thành công!")
+        dummy_image = tf.zeros((1, 299, 299, 3))
+        features = _model.cnn_model(dummy_image)
+        enc_output = _model.encoder(features, training=False)
+        dec_input = tf.zeros((1, 1), dtype=tf.int32)
+        _ = _model.decoder(dec_input, enc_output, training=False)
+        try:
+            if os.path.exists(model_paths['encoder_weights_path']):
+                _model.encoder.load_weights(model_paths['encoder_weights_path'])
+                print("Đã tải encoder weights thành công")
+            if os.path.exists(model_paths['decoder_weights_path']):
+                _model.decoder.load_weights(model_paths['decoder_weights_path'])
+                print("Đã tải decoder weights thành công")
+        except Exception as e:
+            print(f"Không thể tải encoder/decoder weights: {e}")
+        print("Đã hoàn thành việc tải mô hình")
     except Exception as e:
-        print(f"Không thể tải encoder/decoder weights: {e}")
-    
-    print("Đã hoàn thành việc tải mô hình")
-    
-except Exception as e:
-    print(f"Lỗi khi tải các phần mô hình: {e}")
-    import traceback
-    traceback.print_exc()
+        print(f"Lỗi khi tải các phần mô hình: {e}")
+        import traceback
+        traceback.print_exc()
+    model = _model
+
+@app.before_first_request
+def before_first_request_func():
+    initialize_model()
 
 def load_image(image_bytes):
     img = Image.open(io.BytesIO(image_bytes)).resize((299, 299))
@@ -105,6 +109,8 @@ def load_image(image_bytes):
     return tf.expand_dims(img, 0)
 
 def generate_caption(image_tensor):
+    if model is None:
+        initialize_model()
     features = model.cnn_model(image_tensor)
     
     enc_output = model.encoder(features, training=False)
