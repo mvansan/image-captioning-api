@@ -1,0 +1,7 @@
+Flask
+tensorflow
+numpy
+Pillow
+gunicorn
+requests
+boto3==1.28.38

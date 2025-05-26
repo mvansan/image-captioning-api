@@ -1,0 +1,5 @@
+venv
+__pycache__
+cnn_model.h5
+decoder_weights.weights.h5
+encoder_weights.weights.h5
